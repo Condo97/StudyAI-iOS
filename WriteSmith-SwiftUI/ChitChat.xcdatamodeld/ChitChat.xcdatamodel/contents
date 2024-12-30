@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="23231" systemVersion="23G93" minimumToolsVersion="Automatic" sourceLanguage="Swift" usedWithCloudKit="YES" userDefinedModelVersionIdentifier="">
+    <entity name="Action" representedClassName="Action" syncable="YES" codeGenerationType="class">
+        <attribute name="actionID" optional="YES" attributeType="String"/>
+        <attribute name="date" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="title" optional="YES" attributeType="String"/>
+        <relationship name="actionCollection" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="ActionCollection" inverseName="actions" inverseEntity="ActionCollection"/>
+        <relationship name="drawerCollection" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="GeneratedDrawerCollection" inverseName="action" inverseEntity="GeneratedDrawerCollection"/>
+        <relationship name="panelContent" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="PanelContent" inverseName="action" inverseEntity="PanelContent"/>
+    </entity>
+    <entity name="ActionCollection" representedClassName="ActionCollection" syncable="YES" codeGenerationType="class">
+        <attribute name="actionCollectionID" optional="YES" attributeType="String"/>
+        <attribute name="date" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="displayText" optional="YES" attributeType="String"/>
+        <attribute name="subtitle" optional="YES" attributeType="String"/>
+        <attribute name="title" optional="YES" attributeType="String"/>
+        <relationship name="actions" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="Action" inverseName="actionCollection" inverseEntity="Action"/>
+        <relationship name="conversation" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Conversation" inverseName="actionCollection" inverseEntity="Conversation"/>
+    </entity>
+    <entity name="AirtableAssistant" representedClassName="AirtableAssistant" syncable="YES" codeGenerationType="class">
+        <attribute name="airtableID" optional="YES" attributeType="String"/>
+        <attribute name="updateEpochTime" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <relationship name="assistant" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Assistant" inverseName="airtable" inverseEntity="Assistant"/>
+    </entity>
+    <entity name="Assistant" representedClassName="Assistant" syncable="YES" codeGenerationType="class">
+        <attribute name="assistantDescription" optional="YES" attributeType="String"/>
+        <attribute name="assistantShortDescription" optional="YES" attributeType="String"/>
+        <attribute name="category" optional="YES" attributeType="String"/>
+        <attribute name="deviceCreated" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <attribute name="displayBackgroundColorName" optional="YES" attributeType="String"/>
+        <attribute name="emoji" optional="YES" attributeType="String"/>
+        <attribute name="faceStyleID" optional="YES" attributeType="String"/>
+        <attribute name="faceStyleName" optional="YES" attributeType="String"/>
+        <attribute name="featured" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <attribute name="imagePath" optional="YES" attributeType="String"/>
+        <attribute name="initialMessage" optional="YES" attributeType="String"/>
+        <attribute name="name" optional="YES" attributeType="String"/>
+        <attribute name="premium" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <attribute name="pronouns" optional="YES" attributeType="String"/>
+        <attribute name="systemPrompt" optional="YES" attributeType="String"/>
+        <attribute name="usageMessages" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="usageUsers" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="userCreated" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <relationship name="airtable" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="AirtableAssistant" inverseName="assistant" inverseEntity="AirtableAssistant"/>
+        <relationship name="conversation" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="Conversation" inverseName="assistant" inverseEntity="Conversation"/>
+    </entity>
+    <entity name="Chat" representedClassName="Chat" syncable="YES" codeGenerationType="class">
+        <attribute name="chatID" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="date" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="favorited" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <attribute name="imageData" optional="YES" attributeType="Binary"/>
+        <attribute name="imageURL" optional="YES" attributeType="String"/>
+        <attribute name="keepInMind" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <attribute name="sender" optional="YES" attributeType="String"/>
+        <attribute name="text" optional="YES" attributeType="String"/>
+        <relationship name="conversation" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Conversation" inverseName="chats" inverseEntity="Conversation"/>
+        <relationship name="flashCardCollection" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="FlashCardCollection" inverseName="chat" inverseEntity="FlashCardCollection"/>
+        <relationship name="webSearch" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="WebSearch" inverseName="chat" inverseEntity="WebSearch"/>
+    </entity>
+    <entity name="Conversation" representedClassName="Conversation" syncable="YES" codeGenerationType="class">
+        <attribute name="behavior" optional="YES" attributeType="String"/>
+        <attribute name="conversationID" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="latestChatDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="latestChatText" optional="YES" attributeType="String"/>
+        <attribute name="modelID" optional="YES" attributeType="String"/>
+        <attribute name="textFormattingDisabled" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <relationship name="actionCollection" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="ActionCollection" inverseName="conversation" inverseEntity="ActionCollection"/>
+        <relationship name="assistant" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Assistant" inverseName="conversation" inverseEntity="Assistant"/>
+        <relationship name="chats" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="Chat" inverseName="conversation" inverseEntity="Chat"/>
+        <relationship name="persistentAttachments" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="PersistentAttachment" inverseName="conversation" inverseEntity="PersistentAttachment"/>
+    </entity>
+    <entity name="Essay" representedClassName="Essay" syncable="YES" codeGenerationType="class">
+        <attribute name="date" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="editedEssay" optional="YES" attributeType="String"/>
+        <attribute name="essay" optional="YES" attributeType="String"/>
+        <attribute name="prompt" optional="YES" attributeType="String"/>
+        <attribute name="userEdited" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+    </entity>
+    <entity name="FlashCard" representedClassName="FlashCard" syncable="YES" codeGenerationType="class">
+        <attribute name="back" optional="YES" attributeType="String"/>
+        <attribute name="front" optional="YES" attributeType="String"/>
+        <attribute name="index" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <relationship name="flashCardCollection" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="FlashCardCollection" inverseName="flashCards" inverseEntity="FlashCardCollection"/>
+        <relationship name="learnQuestionResult" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="LearnQuestionResult" inverseName="flashCard" inverseEntity="LearnQuestionResult"/>
+    </entity>
+    <entity name="FlashCardCollection" representedClassName="FlashCardCollection" syncable="YES" codeGenerationType="class">
+        <relationship name="chat" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Chat" inverseName="flashCardCollection" inverseEntity="Chat"/>
+        <relationship name="flashCards" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="FlashCard" inverseName="flashCardCollection" inverseEntity="FlashCard"/>
+        <relationship name="learnQuestionResultCollection" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="LearnQuestionResultCollection" inverseName="flashCardCollection" inverseEntity="LearnQuestionResultCollection"/>
+        <relationship name="persistentAttachment" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="PersistentAttachment" inverseName="flashCardCollection" inverseEntity="PersistentAttachment"/>
+    </entity>
+    <entity name="GeneratedDrawer" representedClassName="GeneratedDrawer" syncable="YES" codeGenerationType="class">
+        <attribute name="archived" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <attribute name="content" optional="YES" attributeType="String"/>
+        <attribute name="contentOriginal" optional="YES" attributeType="String"/>
+        <attribute name="header" optional="YES" attributeType="String"/>
+        <attribute name="headerOriginal" optional="YES" attributeType="String"/>
+        <attribute name="index" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <relationship name="parentCollection" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="GeneratedDrawerCollection" inverseName="drawers" inverseEntity="GeneratedDrawerCollection"/>
+    </entity>
+    <entity name="GeneratedDrawerCollection" representedClassName="GeneratedDrawerCollection" syncable="YES" codeGenerationType="class">
+        <attribute name="archived" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <attribute name="subtitle" optional="YES" attributeType="String"/>
+        <attribute name="subtitleOriginal" optional="YES" attributeType="String"/>
+        <attribute name="title" optional="YES" attributeType="String"/>
+        <attribute name="titleOriginal" optional="YES" attributeType="String"/>
+        <relationship name="action" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Action" inverseName="drawerCollection" inverseEntity="Action"/>
+        <relationship name="drawers" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="GeneratedDrawer" inverseName="parentCollection" inverseEntity="GeneratedDrawer"/>
+    </entity>
+    <entity name="LearnQuestionResult" representedClassName="LearnQuestionResult" syncable="YES" codeGenerationType="class">
+        <attribute name="correctAttempts" optional="YES" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="recentlyIncorrect" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <relationship name="flashCard" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="FlashCard" inverseName="learnQuestionResult" inverseEntity="FlashCard"/>
+        <relationship name="learnQuestionResultCollection" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="LearnQuestionResultCollection" inverseName="learnQuestionResult" inverseEntity="LearnQuestionResultCollection"/>
+    </entity>
+    <entity name="LearnQuestionResultCollection" representedClassName="LearnQuestionResultCollection" parentEntity="FlashCardCollection" syncable="YES" codeGenerationType="class">
+        <attribute name="endDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="startDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <relationship name="flashCardCollection" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="FlashCardCollection" inverseName="learnQuestionResultCollection" inverseEntity="FlashCardCollection"/>
+        <relationship name="learnQuestionResult" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="LearnQuestionResult" inverseName="learnQuestionResultCollection" inverseEntity="LearnQuestionResult"/>
+    </entity>
+    <entity name="PanelComponentContent" representedClassName="PanelComponentContent" syncable="YES" codeGenerationType="class">
+        <attribute name="cachedInput" optional="YES" attributeType="String"/>
+        <attribute name="componentID" optional="YES" attributeType="String"/>
+        <relationship name="panelContent" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="PanelContent" inverseName="components" inverseEntity="PanelContent"/>
+        <relationship name="persistentAttachments" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="PersistentAttachment" inverseName="panelComponentContent" inverseEntity="PersistentAttachment"/>
+    </entity>
+    <entity name="PanelContent" representedClassName="PanelContent" syncable="YES" codeGenerationType="class">
+        <relationship name="action" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Action" inverseName="panelContent" inverseEntity="Action"/>
+        <relationship name="components" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="PanelComponentContent" inverseName="panelContent" inverseEntity="PanelComponentContent"/>
+    </entity>
+    <entity name="PersistentAttachment" representedClassName="PersistentAttachment" syncable="YES" codeGenerationType="class">
+        <attribute name="attachmentType" optional="YES" attributeType="String"/>
+        <attribute name="cachedText" optional="YES" attributeType="String"/>
+        <attribute name="date" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="documentsFilePath" optional="YES" attributeType="String"/>
+        <attribute name="externalURL" optional="YES" attributeType="URI"/>
+        <attribute name="generatedTitle" optional="YES" attributeType="String"/>
+        <attribute name="summary" optional="YES" attributeType="String"/>
+        <relationship name="conversation" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Conversation" inverseName="persistentAttachments" inverseEntity="Conversation"/>
+        <relationship name="flashCardCollection" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="FlashCardCollection" inverseName="persistentAttachment" inverseEntity="FlashCardCollection"/>
+        <relationship name="panelComponentContent" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="PanelComponentContent" inverseName="persistentAttachments" inverseEntity="PanelComponentContent"/>
+    </entity>
+    <entity name="WebSearch" representedClassName="WebSearch" syncable="YES" codeGenerationType="class">
+        <attribute name="query" optional="YES" attributeType="String"/>
+        <relationship name="chat" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Chat" inverseName="webSearch" inverseEntity="Chat"/>
+        <relationship name="results" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="WebSearchResult" inverseName="webSearch" inverseEntity="WebSearchResult"/>
+    </entity>
+    <entity name="WebSearchResult" representedClassName="WebSearchResult" syncable="YES" codeGenerationType="class">
+        <attribute name="content" optional="YES" attributeType="String"/>
+        <attribute name="title" optional="YES" attributeType="String"/>
+        <attribute name="url" optional="YES" attributeType="String"/>
+        <relationship name="webSearch" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="WebSearch" inverseName="results" inverseEntity="WebSearch"/>
+    </entity>
+</model>

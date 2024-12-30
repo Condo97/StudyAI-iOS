@@ -1,0 +1,1368 @@
+VoiceSelectorContainer.swift//
+//  VoiceSelectorContainer.swift
+//  WriteSmith-SwiftUI
+//
+//  Created by Alex Coundouriotis on 9/5/24.
+//
+
+import SwiftUI
+
+struct VoiceSelectorContainer: View {
+    
+    @Binding var isPresented: Bool
+    
+    @EnvironmentObject private var constantsUpdater: ConstantsUpdater
+    
+    @State private var liveSpeechSpeed: Double = ConstantsUpdater.liveSpeechSpeed
+    @State private var liveSpeechVoice: SpeechVoices = ConstantsUpdater.liveSpeechVoice
+    
+    var body: some View {
+        VStack {
+            VoiceSelectorView(
+                liveSpeechVoice: $liveSpeechVoice,
+                speed: $liveSpeechSpeed)
+            
+            HStack {
+                // Close Button
+                Button(action: {
+                    // Close
+                    isPresented = false
+                }) {
+                    Text("Close")
+                        .font(.custom(Constants.FontName.body, size: 17.0))
+                        .foregroundStyle(Colors.elementBackgroundColor)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Colors.elementTextColor)
+                        .clipShape(RoundedRectangle(cornerRadius: 14.0))
+                }
+                
+                // Save Button
+                Button(action: {
+                    // Save and close
+                    constantsUpdater.liveSpeechSpeed = liveSpeechSpeed
+                    constantsUpdater.liveSpeechVoice = liveSpeechVoice
+                    isPresented = false
+                }) {
+                    Text("Save")
+                        .font(.custom(Constants.FontName.medium, size: 17.0))
+                        .foregroundStyle(Colors.elementTextColor)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Colors.elementBackgroundColor)
+                        .clipShape(RoundedRectangle(cornerRadius: 14.0))
+                }
+            }
+        }
+    }
+    
+}
+
+#Preview {
+    
+    VoiceSelectorContainer(
+        isPresented: .constant(true))
+    .environmentObject(ConstantsUpdater())
+    
+}
+LiveSpeechAudioSessionUpdater.swift//
+//  LiveSpeechAudioSessionUpdater.swift
+//  WriteSmith-SwiftUI
+//
+//  Created by Alex Coundouriotis on 9/4/24.
+//
+
+import AVKit
+import Combine
+import Foundation
+import SwiftUI
+
+class LiveSpeechAudioSessionUpdater: ObservableObject {
+    
+    @Published var isUsingEarpiece: Bool = false
+    
+    private var cancellables: Set<AnyCancellable> = []
+    
+    init() {
+        // Create sink to switch audio route on update of isUsingEarpiece
+        $isUsingEarpiece.sink(receiveValue: switchAudioRoute)
+            .store(in: &cancellables) // Used to maintain a strong reference to the subscription so that values are updated
+        
+        // Switch audio route to initial value of isUsingEarpiece
+        switchAudioRoute(toEarpiece: isUsingEarpiece)
+        
+        // Set audioSession to active
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            // TODO: Handle Errors
+            print("Error setting AVAudioSession instance to active in LiveSpeechAudioSessionUpdater... \(error)")
+        }
+    }
+    
+    private func switchAudioRoute(toEarpiece: Bool) {
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            if toEarpiece {
+                try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [])
+//                try audioSession.overrideOutputAudioPort(.none)
+            } else {
+                try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+//                try audioSession.overrideOutputAudioPort(.speaker)
+            }
+        } catch {
+            // TODO: Handle Errors
+            print("Error overriding output audio port for audio session in LiveSpeechContainer... \(error)")
+        }
+    }
+    
+}
+SpeechTranscriber.swift//
+//  SpeechTranscriber.swift
+//  WriteSmith-SwiftUI
+//
+//  Created by Alex Coundouriotis on 8/23/24.
+//
+
+import Foundation
+import Speech
+
+@MainActor
+class SpeechTranscriber: ObservableObject {
+    
+    @Published var liveTranscribedText: String = ""
+    @Published var finishedTranscribedText: String = ""
+    @Published var isListening: Bool = false
+    @Published var audioLevels: [CGFloat] = Array(repeating: 0.0, count: 4)
+    @Published var errorMessage: String?
+    @Published var isManualListeningEnabled: Bool = false
+    @Published var isPaused: Bool = false
+    
+    private var audioEngine = AVAudioEngine()
+    private var speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    
+    private var silenceTimer: Timer?
+    
+    private var silenceTimerDuration: Double {
+        ConstantsUpdater.liveSpeechSilenceDuration
+    }
+    
+    init() {
+        SFSpeechRecognizer.requestAuthorization { authStatus in
+            DispatchQueue.main.async {
+                switch authStatus {
+                case .authorized: break
+                case .denied, .restricted, .notDetermined:
+                    self.errorMessage = "Speech recognition authorization denied"
+                @unknown default:
+                    self.errorMessage = "Unknown speech recognition authorization status"
+                }
+            }
+        }
+    }
+    
+    func startListening() {
+        // Ensure is not paused, otherwise set to false and return
+        guard !isPaused else {
+            isPaused = false
+            return
+        }
+        
+        // If speech transcriber has not been created start and create it
+        if !audioEngine.isRunning {
+            startAndCreateSpeechTranscriber()
+        }
+        
+        // Create recognitionTask
+        recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest!) { [weak self] result, error in
+            if let result = result {
+                // Update the transcribed text with the result
+                self?.liveTranscribedText = result.bestTranscription.formattedString
+                self?.resetSilenceTimer()
+            }
+            
+            if let error = error {
+                print("Recognition error: \(error.localizedDescription)")
+                self?.stopListening() // Handle errors by stopping listening
+            }
+        }
+        
+//        // If not isPaused reset finishedTranscribedText
+//        if !isPaused {
+            // Reset finishedTranscribedText
+            finishedTranscribedText = ""
+//        }
+        
+        // Set isListening to true
+        isListening = true
+        
+//        // Set isPaused to false
+//        isPaused = false
+    }
+    
+    func stopListening() {
+        DispatchQueue.main.async {
+            // Ensure is listening, otherwise return
+            guard self.isListening else {
+                return
+            }
+            
+            // Set isListening to false
+            self.isListening = false
+            
+            // Capture the final transcription
+            self.finishedTranscribedText = self.liveTranscribedText
+            
+            // Cancel and reset recognitionTask
+            self.recognitionTask?.cancel()
+            self.recognitionTask = nil
+        }
+    }
+    
+    func pauseListening() {
+        // Set isPaused to true
+        isPaused = true
+    }
+    
+    private func startAndCreateSpeechTranscriber() {
+        guard speechRecognizer.isAvailable else {
+            errorMessage = "Speech recognizer is not available. Please try again later."
+            return
+        }
+        
+        // Set isManualListeningEnabled to false
+        isManualListeningEnabled = false
+        
+        // Reset finished text when starting a new listening session
+        finishedTranscribedText = ""
+        
+        // Cancel the previous recognition task if it's running
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        
+        isListening = true
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        
+//        let audioSession = AVAudioSession.sharedInstance()
+        
+        do {
+//            try audioSession.setCategory(.record, mode: .measurement, options: []/*.duckOthers*/)
+//            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            
+            let inputNode = audioEngine.inputNode
+            
+            recognitionRequest?.shouldReportPartialResults = true
+            
+            
+            
+            let recordingFormat = inputNode.outputFormat(forBus: 0)
+            inputNode.removeTap(onBus: 0)
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, when in
+                DispatchQueue.main.async {
+                    if self.isListening && !self.isPaused {
+                        self.recognitionRequest?.append(buffer)
+                        
+                        //                // Calculate and publish audio volume
+                        //                let volume = self.calculateVolume(from: buffer)
+                        //                DispatchQueue.main.async {
+                        //                    self.audioVolume = volume
+                        //                }
+                        
+                        // Calculate and publish dynamic volume levels
+                        if let tempAudioLevels = self.updateAudioLevels(from: buffer) {
+                            self.audioLevels = tempAudioLevels
+                        }
+                    }
+                }
+            }
+            
+            audioEngine.prepare()
+            try audioEngine.start()
+            resetSilenceTimer()
+        } catch {
+            errorMessage = "Audio Engine couldn't start due to an error: \(error.localizedDescription)"
+            stopAndDestroySpeechTranscriber()
+        }
+    }
+    
+    private func stopAndDestroySpeechTranscriber() {
+        // Set isListening to false, stop audioEngine, remove tasks, and end recogntion request audio
+        isListening = false
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        
+        // Cancel the recognition task
+        recognitionTask?.cancel() // This resets liveTranscribedText
+        recognitionTask = nil
+    }
+    
+    private func resetSilenceTimer() {
+        silenceTimer?.invalidate()
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: ConstantsUpdater.liveSpeechSilenceDuration, repeats: false) { _ in
+            DispatchQueue.main.async {
+                self.stopRecordingIfSomeTextHasBeenTranscribed()
+            }
+        }
+    }
+    
+    private func updateAudioLevels(from buffer: AVAudioPCMBuffer) -> [CGFloat]? {
+        guard let channelData = buffer.floatChannelData else { return nil }
+        
+        var audioLevels: [CGFloat] = Array(repeating: 0.0, count: 4) // Four levels TODO: Make this dynamic
+
+        let channelCount = Int(buffer.format.channelCount)
+        let frameLength = Int(buffer.frameLength)
+        let lowPassRange = 1000.0 // Low frequency up to 1000 Hz
+        let midLowRange = 2000.0   // Mid-low frequency up to 2000 Hz
+        let midHighRange = 3000.0  // Mid-high frequency up to 3000 Hz
+        let highRange = 4000.0     // High frequency up to 4000 Hz
+
+        var lowLevel: Float = 0.0
+        var midLowLevel: Float = 0.0
+        var midHighLevel: Float = 0.0
+        var highLevel: Float = 0.0
+
+        // Simple amplitude measurement
+        for frame in 0..<frameLength {
+            let sample = channelData[0][frame]
+
+            // Categorize sample into frequency bands
+            if frame < Int(lowPassRange) {
+                lowLevel += abs(sample)
+            } else if frame < Int(midLowRange) {
+                midLowLevel += abs(sample)
+            } else if frame < Int(midHighRange) {
+                midHighLevel += abs(sample)
+            } else if frame < Int(highRange) {
+                highLevel += abs(sample)
+            }
+        }
+
+        // Normalize and set levels
+        let maxVolume = 80.0
+        audioLevels[0] = max(min(CGFloat(lowLevel) / CGFloat(maxVolume), 1.0), 0.0)
+        audioLevels[1] = max(min(CGFloat(midLowLevel) / CGFloat(maxVolume), 1.0), 0.0)
+        audioLevels[2] = max(min(CGFloat(midHighLevel) / CGFloat(maxVolume), 1.0), 0.0)
+        audioLevels[3] = max(min(CGFloat(highLevel) / CGFloat(maxVolume), 1.0), 0.0)
+        
+        return audioLevels
+    }
+    
+    func stopRecordingIfSomeTextHasBeenTranscribed() {
+        // Ensure some text has been transcribed, otherwise reset silence timer
+        guard !liveTranscribedText.isEmpty else {
+            resetSilenceTimer()
+            return
+        }
+        
+        // Ensure manual listening is not enabled, otherwise reset silence timer and return TODO: Should the silence timer continue to be reset or stopped here?
+        guard !isManualListeningEnabled else {
+            resetSilenceTimer()
+            return
+        }
+        
+        // Stop listening
+        self.stopListening()
+    }
+    
+    private func calculateVolume(from buffer: AVAudioPCMBuffer) -> CGFloat {
+        guard let channelData = buffer.floatChannelData else { return 0.0 }
+        
+        let channelCount = Int(buffer.format.channelCount)
+        let frameLength = Int(buffer.frameLength)
+
+        var totalVolume: Float = 0.0
+        for channel in 0..<channelCount {
+            let channelDataArray = channelData[channel]
+            // Calculate the sum of absolute values for the current channel
+            let sum = (0..<frameLength).reduce(0.0) { $0 + abs(channelDataArray[$1]) }
+            // Compute average power for current channel
+            let avgPower = sum / Float(frameLength)
+            totalVolume += avgPower
+        }
+        
+        // Average over all channels
+        return CGFloat(totalVolume / Float(channelCount))
+    }
+    
+}
+VoiceSelectorView.swift//
+//  VoiceSelectorView.swift
+//  WriteSmith-SwiftUI
+//
+//  Created by Alex Coundouriotis on 9/5/24.
+//
+
+import SwiftUI
+
+struct VoiceSelectorView: View {
+    
+    @Binding var liveSpeechVoice: SpeechVoices
+    @Binding var speed: Double
+    
+//    @StateObject private var liveSpeechAudioSessionUpdater: LiveSpeechAudioSessionUpdater = LiveSpeechAudioSessionUpdater() // TODO: This should always be the speaker right or maybe not maybe it should be this hm think about this
+    @StateObject private var queuedAudioPlayer: QueuedAudioPlayer = QueuedAudioPlayer()
+    
+    @State private var isLoadingTryVoice: Bool = false
+    
+    private let tryVoiceTranscripts: [String] = [
+        "Why did the math book look sad? It had too many problems.",
+        "Science class is where I learned the hard way that mixing soda and vinegar is a bad idea.",
+        "History teachers like to say, 'Those who don’t study history are doomed to retake the test!'",
+        "Gym class is where I discovered my true talent: dodging flying basketballs.",
+        "Why do plants hate math? Because it gives them square roots!",
+        "The best part of school lunch? Trading my carrots for cookies.",
+        "Did you hear about the claustrophobic astronaut? He just needed a little space during recess.",
+        "Homework is like a bad joke; no one wants to hear it, but we all have to deal with it.",
+        "Art class is the only time throwing paint can be considered productive.",
+        "Why was the teacher wearing sunglasses? Because her students were so bright!",
+        "P.E. stands for 'Please Endure' when it’s time for the mile run.",
+        "My backpack is like a black hole; things just disappear in there.",
+        "Did you know pencils have feelings? They’re always drawn to each other.",
+        "Geography class taught me that I can't find my way out of the library.",
+        "In English class, I learned that a thesaurus is my best friend after the word \"fun\" runs out.",
+        "Biology class proved that even cells know how to divide.",
+        "Why don’t scientists trust atoms? Because they make up everything... including our grades!",
+        "School is like a buffet; everyone’s just trying to get a taste of the fun!",
+        "We should hire a motivational speaker for the cafeteria; lunch isn’t that fishy!",
+        "My favorite subject is lunch; it never fails to deliver a slice of fun!",
+        "If laughter is the best medicine, then recess is the school’s pharmacy!"
+    ]
+    
+    var body: some View {
+        VStack(alignment: .leading) {
+            // Title
+            Text("Select Voice")
+                .font(.custom(Constants.FontName.medium, size: 20.0))
+            
+            // Voices
+            SingleAxisGeometryReader(axis: .horizontal) { geo in
+                FlexibleView(
+                    availableWidth: geo.magnitude,
+                    data: SpeechVoices.allCases,
+                    spacing: 8.0,
+                    alignment: .leading,
+                    content: { speechVoice in
+                        Button(action: {
+                            liveSpeechVoice = speechVoice
+                        }) {
+                            Text(speechVoice.rawValue)
+                                .font(.custom(liveSpeechVoice == speechVoice ? Constants.FontName.heavy : Constants.FontName.medium, size: 17.0))
+                                .foregroundStyle(liveSpeechVoice == speechVoice ? Colors.userChatTextColor : Colors.userChatBubbleColor)
+                                .padding()
+                                .background(liveSpeechVoice == speechVoice ? Colors.userChatBubbleColor : Colors.userChatTextColor)
+                                .clipShape(RoundedRectangle(cornerRadius: 14.0))
+                        }
+                    })
+            }
+            
+            // Speech Test
+            Button(action: {
+                Task {
+                    // Defer setting isLoadingTryVoice to false
+                    defer {
+                        DispatchQueue.main.async {
+                            self.isLoadingTryVoice = false
+                        }
+                    }
+                    
+                    // Set isLoadingTryVoice to true
+                    await MainActor.run {
+                        isLoadingTryVoice = true
+                    }
+                    
+                    // Ensure authToken
+                    let authToken: String
+                    do {
+                        authToken = try await AuthHelper.ensure()
+                    } catch {
+                        // TODO: Handle Errors
+                        print("Error ensuring authToken in LiveSpeechContainer... \(error)")
+                        return
+                    }
+                    
+                    // Generate speech
+                    let speech: Data
+                    do {
+                        speech = try await SpeechGenerator.generateSpeech(
+                            authToken: authToken,
+                            input: tryVoiceTranscripts.randomElement() ?? "Hi I'm your new AI.",
+                            speed: speed,
+                            voice: liveSpeechVoice)
+                    } catch {
+                        // TODO: Handle Errors
+                        print("Error generating speech in VoiceSelectorView... \(error)")
+                        return
+                    }
+                    
+                    // Speak
+                    queuedAudioPlayer.queue(data: speech)
+                }
+            }) {
+                HStack {
+                    Text("Try Voice \(Image(systemName: "speaker.wave.3"))")
+                    if queuedAudioPlayer.isQueuePlaying {
+                        ProgressView()
+                    }
+                }
+            }
+            .disabled(queuedAudioPlayer.isQueuePlaying || isLoadingTryVoice)
+            .foregroundStyle(Colors.userChatBubbleColor)
+            .padding(.vertical)
+            
+            Text("Speed")
+                .font(.custom(Constants.FontName.medium, size: 20.0))
+            
+            Picker("", selection: $speed) {
+                Text("0.5x")
+                    .tag(0.5)
+                Text("1.0x")
+                    .tag(1.0)
+                Text("1.25x")
+                    .tag(1.25)
+                Text("1.5x")
+                    .tag(1.5)
+                Text("2.0x")
+                    .tag(2.0)
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+    
+}
+
+#Preview {
+    
+    VoiceSelectorView(
+        liveSpeechVoice: .constant(.alloy),
+        speed: .constant(1.0))
+        .padding()
+        .background(Colors.background)
+        .clipShape(RoundedRectangle(cornerRadius: 14.0))
+    
+}
+LiveSpeechContainer.swift//
+//  LiveSpeechContainer.swift
+//  WriteSmith-SwiftUI
+//
+//  Created by Alex Coundouriotis on 8/23/24.
+//
+
+import AVKit
+import SwiftUI
+
+struct LiveSpeechContainer: View {
+    
+//    var assistant: Assistant?
+//    var attachment: PersistentAttachment?
+    @Binding var isPresented: Bool
+    var conversation: Conversation
+//    @ObservedObject var conversationChatGenerator: ConversationChatGenerator
+    @FetchRequest var persistentAttachments: FetchedResults<PersistentAttachment>
+    
+    @Environment(\.managedObjectContext) private var viewContext
+    
+    @EnvironmentObject private var constantsUpdater: ConstantsUpdater
+    @EnvironmentObject private var premiumUpdater: PremiumUpdater
+    
+    @StateObject private var conversationChatGenerator: ConversationChatGenerator = ConversationChatGenerator()
+    @StateObject private var liveSpeechAudioSessionUpdater: LiveSpeechAudioSessionUpdater = LiveSpeechAudioSessionUpdater()
+    @StateObject private var liveSpeechGenerator: LiveSpeechGenerator = LiveSpeechGenerator()
+    @StateObject private var queuedAudioPlayer: QueuedAudioPlayer = QueuedAudioPlayer()
+    @StateObject private var speechTranscriber: SpeechTranscriber = SpeechTranscriber()
+    
+//    @State private var pauseButtonState: LiveSpeechView.PauseButtonState = .pause
+    
+//    @State private var isManualListening: Bool = false
+    
+//    @State private var isSpeakingChat: Bool = false
+    
+    @State private var isCancelled: Bool = false
+    
+    private var speakingBubbleState: LiveSpeechView.SpeakingBubbleStates {
+        if isCancelled {
+            return .none
+        } else {
+            if liveSpeechGenerator.isLoading || queuedAudioPlayer.isQueuePlaying || conversationChatGenerator.isGenerating {
+                return .speakingActive
+            } else {
+                if speechTranscriber.isListening && !speechTranscriber.isPaused {
+                    if speechTranscriber.isManualListeningEnabled {
+                        return .listeningManualActive
+                    } else {
+                        if speechTranscriber.liveTranscribedText.isEmpty {
+                            return .listeningWaiting
+                        } else {
+                            return .listeningAutoActive
+                        }
+                    }
+                } else {
+                    if conversationChatGenerator.isLoading {
+                        return .speakingLoading
+                    } else {
+                        return .none
+                    }
+                }
+            }
+        }
+//        isCancelled ? .none : isSpeakingChat ? .speakingActive : speechTranscriber.isListening ? (speechTranscriber.isManualListeningEnabled ? .listeningManualActive : (speechTranscriber.liveTranscribedText.isEmpty ? .listeningWaiting : .listeningAutoActive)) : conversationChatGenerator.isLoading ? .speakingLoading : .none
+    }
+    
+    private var pauseButtonState: LiveSpeechView.PauseButtonState {
+        // The pause button is only shown as a pause button when AI is listening. The pause button pauses the listening and turns into a play button. When the AI is talking, a stop button is shown that cancels the speach and restarts listening.
+        if isCancelled {
+            return .play
+        } else {
+            if liveSpeechGenerator.isLoading || queuedAudioPlayer.isQueuePlaying || conversationChatGenerator.isLoading || conversationChatGenerator.isGenerating {
+                return .stop
+            } else {
+                if speechTranscriber.isListening && !speechTranscriber.isPaused {
+                    return .pause
+                } else {
+                    return .play
+                }
+            }
+        }
+//        isCancelled ? .play : isSpeakingChat || conversationChatGenerator.isLoading ? .stop : speechTranscriber.isListening ? .pause : .play
+    }
+    
+    var body: some View {
+        VStack {
+            LiveSpeechView(
+                pauseButtonState: pauseButtonState,
+                audioLevels: speechTranscriber.audioLevels,
+                assistant: conversation.assistant,
+                attachment: persistentAttachments.first,
+                speakingBubbleState: speakingBubbleState,
+                aiBubbleVolume: queuedAudioPlayer.audioVolume,
+                userBubbleVolume: speechTranscriber.audioLevels.first ?? 0.0,
+                isUsingEarpiece: $liveSpeechAudioSessionUpdater.isUsingEarpiece,
+                onStopAll: onStopAll,
+                onPausePlayActionButtonPressed: onPausePlayActionButtonPressed,
+                onBeginManualListening: {
+                    // Set manual listening enabled to true to ensure the silence timer does not stop recording
+                    speechTranscriber.isManualListeningEnabled = true
+                },
+                onEndManualListening: {
+                    // If manual listening is enabled stop recording manually
+                    if speechTranscriber.isManualListeningEnabled {
+                        speechTranscriber.stopListening()
+                    }
+                },
+                onDismiss: {
+                    isPresented = false
+                })
+        }
+        .background(Colors.background)
+        .onReceive(queuedAudioPlayer.$isQueuePlaying) { newValue in
+            // If queue finishes playing and speech generator is not loading and is not cancelled start recrding
+            if !newValue && !liveSpeechGenerator.isLoading && !isCancelled {
+                do {
+                    try speechTranscriber.startListening()
+                } catch {
+                    // TODO: Handle Errors
+                    print("Error starting recording in LiveSpeechContainer... \(error)")
+                }
+            }
+            
+//            if !newValue && !isCancelled {
+//                do {
+//                    try speechTranscriber.startRecording()
+//                } catch {
+//                    // TODO: Handle Errors
+//                    print("Error starting recording in LiveSpeechContainer... \(error)")
+//                }
+//            }
+        }
+//        .onAppear { TODO: Start recording is called by onReceive queuedAudioPlayer isQueuePlaying being false and everything else being false when it appears
+//            do {
+//                try speechTranscriber.startRecording()
+//            } catch {
+//                // TODO: Handle Errors
+//                print("Error starting recording in LiveSpeechContainer... \(error)")
+//            }
+//        }
+        .onDisappear {
+            onStopAll()
+        }
+        .onReceive(speechTranscriber.$finishedTranscribedText) { newValue in
+            // Ensure newValue is not empty, otherwise return
+            guard !newValue.isEmpty else {
+                // TODO: Handle Errors
+                return
+            }
+            
+            // Ensure is not cancelled, otherwise return
+            guard !isCancelled else {
+                // TODO: Handle Errors
+                return
+            }
+            
+            Task {
+                // Ensure authToken, otherwise return TODO: Handle errors
+                let authToken: String
+                do {
+                    authToken = try await AuthHelper.ensure()
+                } catch {
+                    // TODO: Handle errors
+                    print("Error ensureing AuthToken in EssayActionCollectionFlowView... \(error)")
+                    return
+                }
+                
+                // Stream generate classify save chat
+                do {
+                    // Once finishedTranscribedText is updated and not empty generate chat
+                    try await conversationChatGenerator.streamGenerateClassifySaveChat(
+                        input: newValue,
+                        images: nil,
+                        imageURLs: nil,
+                        additionalBehavior: "IMPORTANT - You are currently acting as a live chat client. You are to make sure to keep responses short and to the point and interesting. You are not to do long responses as the reading speed is not always that quick, unless the user asks you to of course or it is required!",
+                        authToken: authToken,
+                        isPremium: premiumUpdater.isPremium,
+                        model: GPTModelHelper.currentChatModel,
+                        to: conversation,
+                        in: viewContext)
+                } catch {
+                    // TODO: Handle Errors
+                    print("Error streaming generating classifying saving chat in LiveSpeechContainer... \(error)")
+                }
+                
+                // TODO: The streamGenerateClassifySaveChat can throw an error when cancelled which can be used to prevent the loadNextTTS from being called if the generation was cancelled before 25 words were received. If 25 words have been received it will already have called loadNexTTS but not call it here which means it would never have a repeat call on loadNextTTS after cancellation. The next process to cancel would be the loadNextTTS recursive call. If the loading is interrupted there nothing would be received, so if loading is interrupted and the queue is cleared and the speech is stopped there should be no more potnetial for it to speak when paused. If the user interrupts speechTranscriber it should just not update call cancelRecording so finishedTranscribedText is not updated.
+                
+                // The thing being caught is if there are fewer than 25 words it won't automatically start loading the TTS. So if is not speaking chat and there is a streaming chat then this should be the case and therefore the next TTS should be generated TODO: Make sure this is the only case this is called and this is an acceptable timing--after the stream completes--for this check and load to occur
+                if !isCancelled,
+                   !liveSpeechGenerator.isLoading,
+                   !queuedAudioPlayer.isQueuePlaying,
+                   let streamingChat = conversationChatGenerator.streamingChat,
+                   !streamingChat.isEmpty {
+                    // If finished generating and there are fewer than 25 words in streamingChat load next TTS
+                    liveSpeechGenerator.loadNextTTS(
+                        conversation: conversation,
+                        speechSpeed: constantsUpdater.liveSpeechSpeed,
+                        speechVoice: constantsUpdater.liveSpeechVoice,
+                        conversationChatGenerator: conversationChatGenerator,
+                        queuedAudioPlayer: queuedAudioPlayer,
+                        in: viewContext)
+                }
+            }
+        }
+        .onReceive(conversationChatGenerator.$streamingChat) { newValue in
+            guard let newValue = newValue, !newValue.isEmpty else { return }
+            guard !isCancelled else { return }
+
+            // Parse the newValue to determine when to load TTS
+            let words = newValue.split(separator: " ")
+            if !liveSpeechGenerator.isLoading && words.count >= 25 { // Check for 25 words
+//                currentlyQueuedSpeechToGenerateFromStreamingChat = String(newValue) // Queue for TTS
+                liveSpeechGenerator.loadNextTTS(
+                    conversation: conversation,
+                    speechSpeed: constantsUpdater.liveSpeechSpeed,
+                    speechVoice: constantsUpdater.liveSpeechVoice,
+                    conversationChatGenerator: conversationChatGenerator,
+                    queuedAudioPlayer: queuedAudioPlayer,
+                    in: viewContext)
+            }
+        }
+//        .onReceive(queuedAudioPlayer.$isQueuePlaying) { newValue in
+//            if !newValue {
+//                // If queue is not playing set isSpeakingChat to false
+//                isSpeakingChat = false
+//            }
+//        }
+        
+        
+//        VStack {
+//            Text(speechTranscriber.liveTranscribedText)
+//                .padding()
+//                .border(Color.gray, width: 1)
+//                .padding()
+//
+//            if speechTranscriber.isListening {
+//                Text("Listening...")
+//                    .font(.headline)
+//                    .foregroundColor(.red)
+//            }
+//
+//            if let errorMessage = speechTranscriber.errorMessage {
+//                Text(errorMessage)
+//                    .foregroundColor(.red)
+//            }
+//            
+//            Button(action: {
+//                speechTranscriber.startListening()
+//            }) {
+//                Text(speechTranscriber.isListening ? "Listening..." : "Start Listening")
+//                    .padding()
+//                    .background(Color.blue)
+//                    .foregroundColor(.white)
+//                    .cornerRadius(5)
+//            }
+//            .padding()
+//        }
+//        .onAppear {
+//            speechTranscriber.startListening()
+//        }
+    }
+    
+    private func onStopAll() {
+        // Stop all
+        Task {
+            await MainActor.run {
+                isCancelled = true
+            }
+            
+            do {
+                try await conversationChatGenerator.cancel()
+            } catch {
+                // TODO: Handle Errors
+                print("Error cancelling conversation chat generator in LiveSpeechContainer... \(error)")
+            }
+            
+            await MainActor.run {
+                queuedAudioPlayer.stop()
+                liveSpeechGenerator.interrupt()
+                speechTranscriber.stopListening()
+            }
+        }
+    }
+    
+    private func onPausePlayActionButtonPressed() {
+        switch pauseButtonState {
+        case .pause:
+            // Pause listening
+            speechTranscriber.pauseListening()
+        case .play:
+            // Start listening
+            isCancelled = false
+            do {
+                try speechTranscriber.startListening()
+            } catch {
+                // TODO: Handle Errors
+                print("Error resuming recording in LiveSpeechContainer... \(error)")
+            }
+        case .stop:
+            // Stop loading or speaking
+            onStopAll()
+//            queuedAudioPlayer.stop()
+//                        audioPlayer.stop()
+        }
+    }
+    
+    
+    
+}
+
+//#Preview {
+//    
+//    let conversation = try! CDClient.mainManagedObjectContext.fetch(Conversation.fetchRequest())[0]
+//    
+//    return LiveSpeechContainer(
+//        isPresented: .constant(true),
+//        conversation: conversation,
+//        persistentAttachments: FetchRequest(
+//            sortDescriptors: [NSSortDescriptor(keyPath: \PersistentAttachment.date, ascending: false)],
+//            predicate: NSPredicate(format: "%K = %@", #keyPath(PersistentAttachment.conversation), conversation))
+//    )
+//    
+//}
+MicrophoneVisualizerView.swift//
+//  MicrophoneVisualizerView.swift
+//  WriteSmith-SwiftUI
+//
+//  Created by Alex Coundouriotis on 9/2/24.
+//
+
+import SwiftUI
+
+struct MicrophoneVisualizerView: View {
+    
+//    @ObservedObject var speechTranscriber = SpeechTranscriber()
+    var isActive: Bool
+    var audioLevels: [CGFloat]
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 4.0) {
+            Image(systemName: "mic")
+                .foregroundStyle(Colors.userChatBubbleColor)
+            
+            GeometryReader { geometry in
+                HStack(alignment: .bottom, spacing: 4.0) {
+                    ForEach(0..<audioLevels.count, id: \.self) { index in
+                        RoundedRectangle(cornerRadius: 14.0)
+                            .fill(Colors.userChatBubbleColor)
+                            .frame(height: isActive ? ((geometry.size.height * audioLevels[index]) * 0.75 + 20) : 1.0)
+                        //                        .frame(width: 14.0, height: audioLevels[index] * 3) // Scale height
+                            .animation(.bouncy(duration: 0.1), value: audioLevels[index]) // Smooth transition
+                    }
+                }
+                .frame(height: geometry.size.height, alignment: .bottom)
+            }
+        }
+        .frame(maxHeight: .infinity)
+        .padding()
+    }
+    
+}
+
+//#Preview {
+//    
+//    MicrophoneVisualizerView(
+//        isActive: true,
+//        audioLevels: [0.0, 1.0, 0.5, 0.3])
+//    
+//}
+LiveSpeechGenerator.swift//
+//  LiveSpeechGenerator.swift
+//  WriteSmith-SwiftUI
+//
+//  Created by Alex Coundouriotis on 9/5/24.
+//
+
+import Foundation
+import CoreData
+
+@MainActor
+class LiveSpeechGenerator: ObservableObject {
+    
+    @Published var isLoading: Bool = false
+    
+    private var currentlyQueuedSpeechToGenerateFromStreamingChat: String = ""
+    
+    private var interruptLoadNextTTS: Bool = false
+    
+    private var loadNextTTSTask: Task<Void, Never>?
+    
+    func loadNextTTS(conversation: Conversation, speechSpeed: Double, speechVoice: SpeechVoices, conversationChatGenerator: ConversationChatGenerator, queuedAudioPlayer: QueuedAudioPlayer, in managedContext: NSManagedObjectContext) {
+        // Reset interrupt load next TTS flag to ensure it loads successfully as this is the publicly exposed function
+        interruptLoadNextTTS = false
+        
+        // Reset currentlyQueuedSpeechToGenerateFromStreamingChat
+        currentlyQueuedSpeechToGenerateFromStreamingChat = ""
+        
+        DispatchQueue.main.async {
+            self.loadNextTTSTask = Task {
+                defer {
+                    self.isLoading = false
+                }
+                
+                await MainActor.run {
+                    self.isLoading = true
+                }
+                
+                await self.loadNextTTSInterruptable(
+                    conversation: conversation,
+                    speechSpeed: speechSpeed,
+                    speechVoice: speechVoice,
+                    conversationChatGenerator: conversationChatGenerator,
+                    queuedAudioPlayer: queuedAudioPlayer,
+                    in: managedContext)
+            }
+        }
+    }
+    
+    func interrupt() {
+        DispatchQueue.main.async {
+            self.loadNextTTSTask?.cancel()
+            self.interruptLoadNextTTS = true
+        }
+    }
+    
+    private func loadNextTTSInterruptable(conversation: Conversation, speechSpeed: Double, speechVoice: SpeechVoices, conversationChatGenerator: ConversationChatGenerator, queuedAudioPlayer: QueuedAudioPlayer, in managedContext: NSManagedObjectContext) async {
+        // Get the currently streaming chat
+        let currentStreamingChat: String? = {
+            // If streamingChat can be unwrapped use it
+            if let streamingChat = conversationChatGenerator.streamingChat {
+                return streamingChat
+            }
+            
+            // Otherwise use the most recent chat from conversation
+            let fetchRequest = Chat.fetchRequest()
+            fetchRequest.predicate = NSPredicate(format: "%K = %@", #keyPath(Chat.conversation), conversation)
+            fetchRequest.sortDescriptors = [NSSortDescriptor(keyPath: \Chat.date, ascending: false)]
+            fetchRequest.fetchLimit = 1
+            do {
+                let chat = try managedContext.performAndWait {
+                    return try managedContext.fetch(fetchRequest)[safe: 0]
+                }
+                
+                if let chatText = chat?.text {
+                    return chatText
+                }
+            } catch {
+                // TODO: Handle Errors
+                print("Error fetching chat in LiveSpeechContainer... \(error)")
+            }
+            
+            // Otherwise return nil
+            return nil
+        }()
+        
+        // Ensure unwrap currently streaming chat
+        guard let currentStreamingChat = currentStreamingChat else {
+            // TODO: Handle Errors
+            return
+        }
+        
+        // Ensure authToken
+        let authToken: String
+        do {
+            authToken = try await AuthHelper.ensure()
+        } catch {
+            // TODO: Handle Errors
+            print("Error ensuring authToken in LiveSpeechContainer... \(error)")
+            return
+        }
+        
+        do {
+            // If isGenerating use up to the latest sentence and then subtract currentlyQueuedSpeechToGenerateFromStreamingChat from it
+            // If not isGenerating use the entire thing and subtract currentlyQueuedSpeechToGenerateFromStreamingChat from it
+            // The purpose is to make sure that sentences are spoken in whole parts
+            
+            // Get the chat text to speak from the current chat minus currentlyQueuedSpeechToGenerateFromStreamingChat
+            let currentStreamingChatRemovingCurrentlyQueuedSpeechToGenerateFromStreamingChat: String
+            if conversationChatGenerator.isGenerating {
+                // If isGenerating use up to the latest sentence and then subtract currentlyQueuedSpeechToGenerateFromStreamingChat from it
+                currentStreamingChatRemovingCurrentlyQueuedSpeechToGenerateFromStreamingChat = parseToLatestSentence(from: currentStreamingChat).replacingOccurrences(of: currentlyQueuedSpeechToGenerateFromStreamingChat, with: "")
+            } else {
+                // If not isGenerating use the entire thing and subtract currentlyQueuedSpeechToGenerateFromStreamingChat from it
+                currentStreamingChatRemovingCurrentlyQueuedSpeechToGenerateFromStreamingChat = currentStreamingChat.replacingOccurrences(of: currentlyQueuedSpeechToGenerateFromStreamingChat, with: "")
+            }
+            
+            // Ensure the text to speak is not empty, otherwise set isSpeakingChat to false and return
+            guard !currentStreamingChatRemovingCurrentlyQueuedSpeechToGenerateFromStreamingChat.isEmpty else {
+                return
+            }
+            
+            // Generate speech
+            let speech = try await SpeechGenerator.generateSpeech(
+                authToken: authToken,
+                input: currentStreamingChatRemovingCurrentlyQueuedSpeechToGenerateFromStreamingChat,
+                speed: speechSpeed,
+                voice: speechVoice)
+            
+            // Update currently queued speech to generate from streaming chat with current streaming chat
+            await MainActor.run {
+                currentlyQueuedSpeechToGenerateFromStreamingChat = currentlyQueuedSpeechToGenerateFromStreamingChat + currentStreamingChatRemovingCurrentlyQueuedSpeechToGenerateFromStreamingChat //currentStreamingChat Replaced with this addition to ensure that the currentlyQueuedSpeechToGenerateFromStreamingChat does not contain extra words if it has been clipped to a sentence, this should be fine though since when creating the currentStreamingChatRemovingCurrentlyQueuedSpeechToGenerateFromStreamingChat if it clips out currentlyQueuedSpeechToGenerateFromStreamingChat it should preserve the white space before the first word
+            }
+            
+            try Task.checkCancellation()
+            
+            await queuedAudioPlayer.queue(data: speech) // Queue the audio
+            
+            await loadNextTTSInterruptable(
+                conversation: conversation,
+                speechSpeed: speechSpeed,
+                speechVoice: speechVoice,
+                conversationChatGenerator: conversationChatGenerator,
+                queuedAudioPlayer: queuedAudioPlayer,
+                in: managedContext)
+        } catch {
+            print("Error generating or playing speech: \(error)")
+        }
+    }
+    
+    func parseToLatestSentence(from input: String) -> String {
+        // Define a regular expression pattern for sentence-ending punctuation
+        let sentenceEndingPattern = "[.!?]"
+        
+        // Create a regular expression instance
+        let regex = try! NSRegularExpression(pattern: sentenceEndingPattern, options: [])
+        
+        // Find the range of the last occurrence of a sentence-ending punctuation
+        if let match = regex.matches(in: input, options: [], range: NSRange(location: 0, length: input.utf16.count)).last {
+            // Get the range of the last match
+            let endOfLastSentence = match.range
+            // Get substring up to and including the last sentence-ending character
+            let upToLastSentence = (input as NSString).substring(to: endOfLastSentence.location + 1)
+            return upToLastSentence
+        } else {
+            // No sentence-ending punctuation found, return the original input
+            return input
+        }
+    }
+    
+}
+LiveSpeechView.swift//
+//  LiveSpeechView.swift
+//  WriteSmith-SwiftUI
+//
+//  Created by Alex Coundouriotis on 8/24/24.
+//
+
+import SwiftUI
+
+struct LiveSpeechView: View {
+    
+    enum PauseButtonState {
+        case pause
+        case play
+        case stop
+    }
+    
+    var pauseButtonState: PauseButtonState
+    var audioLevels: [CGFloat]
+    var assistant: Assistant?
+    var attachment: PersistentAttachment?
+    var speakingBubbleState: SpeakingBubbleStates
+    var aiBubbleVolume: CGFloat
+    var userBubbleVolume: CGFloat
+    @Binding var isUsingEarpiece: Bool
+    var onStopAll: () -> Void
+    var onPausePlayActionButtonPressed: () -> Void
+    var onBeginManualListening: () -> Void
+    var onEndManualListening: () -> Void
+    var onDismiss: () -> Void
+    
+    enum SpeakingBubbleStates {
+        case listeningAutoActive
+        case listeningManualActive
+        case listeningWaiting
+        case speakingActive
+        case speakingLoading
+        case none
+    }
+    
+    let minimizedSize: CGFloat = 50.0
+    let maximizedSize: CGFloat = 250.0
+    
+    @State private var userBubblePulsatingAnimationScaleModifier: CGFloat = 1.0
+    
+    @State private var isDisplayingVoiceSelector: Bool = false
+    
+    private var instructionDisplayText: String {
+        switch speakingBubbleState {
+        case .listeningAutoActive:
+            "Listening"
+        case .listeningManualActive:
+            "Release to send"
+        case .listeningWaiting:
+            "Start speaking"
+        case .speakingActive:
+            "Tap to interrupt"
+        case .speakingLoading:
+            "Tap to cancel"
+        case .none:
+            "Tap to resume"
+        }
+    }
+    
+    var body: some View {
+        VStack {
+            HStack {
+                Spacer()
+                
+                // Voice Selector Button
+                Button("\(Image(systemName: "person.wave.2"))") {
+                    onStopAll()
+                    isDisplayingVoiceSelector = true
+                }
+                
+//                // Is Using Earpiece Button TODO: Make this another view or something so that it disables the touch screen so the user does not press buttons with their face
+//                Button("\(Image(systemName: isUsingEarpiece ? "phone.badge.waveform" : "speaker.wave.3"))") {
+//                    isUsingEarpiece.toggle()
+//                }
+//                .foregroundStyle(Colors.elementBackgroundColor)
+                
+//                // Silence Timer Button
+//                Button(action: {
+//                    // Increment silence timer
+//                    switch ConstantsUpdater.liveSpeechSilenceDuration {
+//                    case 6.0 : // 6 -> 0.5
+//                        ConstantsUpdater.liveSpeechSilenceDuration = 0.5
+//                    case 3.0: // 3 -> 6
+//                        ConstantsUpdater.liveSpeechSilenceDuration = 6
+//                    case 1.5: // 1.5 -> 3
+//                        ConstantsUpdater.liveSpeechSilenceDuration = 3
+//                    default: // ? -> 1.5, intended 0.5 -> 1.5
+//                        ConstantsUpdater.liveSpeechSilenceDuration = 1.5
+//                    }
+//                }) {
+//                    let numberFormatter: NumberFormatter = {
+//                        let numberFormatter = NumberFormatter()
+//                        numberFormatter.minimumFractionDigits = 0
+//                        numberFormatter.maximumFractionDigits = 1
+//                        numberFormatter.numberStyle = .decimal
+//                        return numberFormatter
+//                    }()
+//                    HStack {
+//                        Text("\(Image(systemName: "timer"))")
+//                        Text("\(numberFormatter.string(from: NSNumber(value: ConstantsUpdater.liveSpeechSilenceDuration)) ?? "1.5")s")
+//                        Spacer(minLength: 0.0)
+//                    }
+//                    .font(.custom(Constants.FontName.body, size: 14.0))
+//                    .foregroundStyle(Colors.elementBackgroundColor)
+//                    .frame(width: 58.0)
+//                }
+            }
+            
+            Spacer()
+            
+            VStack(spacing: speakingBubbleState == .none ? 16.0 : 32.0) {
+                // AI Circle
+                Circle()
+                    .fill(Colors.aiChatBubbleColor)
+                    .overlay {
+                        AssistantOrAttachmentView(
+                            assistant: assistant,
+                            persistentAttachment: attachment)
+                        .frame(width: speakingBubbleState == .speakingActive || speakingBubbleState == .speakingLoading ? maximizedSize / 4.0 : minimizedSize / 2.0)
+                        .animation(.bouncy, value: speakingBubbleState)
+                        .foregroundStyle(Colors.userChatTextColor)
+                    }
+                    .scaleEffect(1 + aiBubbleVolume * 0.1)
+                    .frame(width: speakingBubbleState == .speakingActive || speakingBubbleState == .speakingLoading ? maximizedSize : minimizedSize)
+                    .animation(.bouncy, value: speakingBubbleState)
+                
+                // User Circle
+                Circle()
+                    .fill(Colors.userChatBubbleColor)
+                    .overlay {
+                        if speakingBubbleState == .listeningManualActive {
+                            ZStack {
+                                Circle()
+                                    .fill(Colors.background)
+                                Circle()
+                                    .stroke(Colors.userChatBubbleColor, lineWidth: 16.0)
+                            }
+                            .transition(.asymmetric(insertion: .scale, removal: .opacity))
+                        }
+                    }
+                    .overlay{
+                        Image(systemName: "mic")
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .padding(8)
+                            .frame(width: (speakingBubbleState == .listeningWaiting || speakingBubbleState == .listeningAutoActive || speakingBubbleState == .listeningManualActive) ? maximizedSize / 4.0 : speakingBubbleState == .none ? maximizedSize / 8.0 : minimizedSize / 2.0)
+                            .foregroundStyle(speakingBubbleState == .listeningManualActive ? Colors.elementBackgroundColor : Colors.userChatTextColor)
+                    }
+                    .scaleEffect(1 * userBubblePulsatingAnimationScaleModifier + userBubbleVolume * 0.1)
+                    .frame(width: (speakingBubbleState == .listeningWaiting || speakingBubbleState == .listeningAutoActive || speakingBubbleState == .listeningManualActive) ? maximizedSize : minimizedSize)
+                    .animation(.bouncy, value: speakingBubbleState)
+            }
+            
+            Spacer()
+            
+            // Display text
+            VStack {
+                Text(instructionDisplayText)
+                    .font(.custom(Constants.FontName.body, size: 17.0))
+                if speakingBubbleState == .listeningWaiting {
+                    Text("Hold for manual control")
+                        .font(.custom(Constants.FontName.body, size: 11.0))
+                        .opacity(0.4)
+                }
+            }
+            .padding(.bottom)
+            
+            // Pause and X Button
+            HStack(alignment: .bottom) {
+                Button(action: onPausePlayActionButtonPressed) {
+                    Image(systemName: pauseButtonState == .pause ? "pause" : pauseButtonState == .play ? "play.fill" : "stop.fill")
+                        .foregroundStyle(Colors.elementBackgroundColor)
+//                        .padding()
+                        .frame(width: 60.0, height: 60.0)
+                        .background(Colors.elementTextColor)
+                        .clipShape(Circle())
+                }
+                
+                ZStack {
+                    if speakingBubbleState == .listeningAutoActive || speakingBubbleState == .listeningManualActive || speakingBubbleState == .listeningWaiting {
+                        MicrophoneVisualizerView(
+                            isActive: speakingBubbleState == .listeningAutoActive || speakingBubbleState == .listeningManualActive || speakingBubbleState == .listeningWaiting, // TODO: Is this adequate
+                            audioLevels: audioLevels)
+                        .animation(.bouncy, value: speakingBubbleState)
+                        .transition(.scale)
+                    }
+                }
+                .frame(width: 140.0, height: 80.0)
+                
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .foregroundStyle(Colors.elementBackgroundColor)
+//                        .padding()
+                        .frame(width: 60.0, height: 60.0)
+                        .background(Colors.elementTextColor)
+                        .clipShape(Circle())
+                }
+            }
+            .frame(height: 150.0)
+        }
+        .background(Colors.background)
+        .gesture(
+            ExclusiveGesture(
+                TapGesture()
+                    .onEnded({ _ in
+                        // Tapped, do the on pause play action
+                        onPausePlayActionButtonPressed()
+                    }),
+                SimultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.5)
+                        .onEnded({ _ in
+                            // Long press started, begin manual listening
+                            onBeginManualListening()
+                        }),
+                    DragGesture(minimumDistance: 0.0)
+                        .onEnded({ _ in
+                            // Long press ended, end manual listening
+                            onEndManualListening()
+                        }))))
+        .clearFullScreenCover(isPresented: $isDisplayingVoiceSelector) {
+            VoiceSelectorContainer(isPresented: $isDisplayingVoiceSelector)
+                .padding()
+                .background(Colors.background)
+                .clipShape(RoundedRectangle(cornerRadius: 14.0))
+                .padding()
+        }
+        .onChange(of: speakingBubbleState) { newValue in
+            if newValue == .speakingLoading {
+                startUserBubblePulsingAnimation()
+            } else {
+                stopUserBubblePulsingAnimation()
+            }
+        }
+    }
+    
+    func startUserBubblePulsingAnimation() {
+        withAnimation(.bouncy.repeatForever(autoreverses: true)) {
+            userBubblePulsatingAnimationScaleModifier = 1.1
+        }
+    }
+    
+    func stopUserBubblePulsingAnimation() {
+        withAnimation(.bouncy) {
+            userBubblePulsatingAnimationScaleModifier = 1.0
+        }
+    }
+    
+}
+
+//#Preview {
+//    
+//    LiveSpeechView(
+//        pauseButtonState: .pause,
+//        audioLevels: [0.0, 1.0, 5.0, 3.0, 6.0],
+//        speakingBubbleState: .speakingLoading,
+//        aiBubbleVolume: 0.0,
+//        userBubbleVolume: 0.0,
+//        isUsingEarpiece: .constant(false),
+//        onStopAll: {
+//            
+//        },
+//        onPausePlayActionButtonPressed: {
+//            
+//        },
+//        onBeginManualListening: {
+//            
+//        },
+//        onEndManualListening: {
+//            
+//        },
+//        onDismiss: {
+//            
+//        })
+//    
+//}
+
